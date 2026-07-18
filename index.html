@@ -38,29 +38,9 @@
 <div id="root"></div>
 
 <script>
-  // ---------------------------------------------------------------------
-  // Storage shim: mirrors the Claude-artifact window.storage API, backed by
-  // this device's localStorage. Data stays on this device only.
-  // ---------------------------------------------------------------------
-  window.storage = {
-    get: async (key) => {
-      const raw = localStorage.getItem(key);
-      if (raw === null) return null;
-      return { key, value: raw };
-    },
-    set: async (key, value) => {
-      localStorage.setItem(key, value);
-      return { key, value };
-    },
-    delete: async (key) => {
-      localStorage.removeItem(key);
-      return { key, deleted: true };
-    },
-    list: async (prefix) => {
-      const keys = Object.keys(localStorage).filter((k) => !prefix || k.startsWith(prefix));
-      return { keys };
-    },
-  };
+  // The app's bootstrap script (near the bottom of this file) waits on this
+  // promise before it starts, so it never runs before Firebase is ready.
+  window.__cloudSyncReady = new Promise((resolve) => { window.__resolveCloudSync = resolve; });
 
   // Register service worker for offline use + installability
   if ("serviceWorker" in navigator) {
@@ -68,6 +48,67 @@
       navigator.serviceWorker.register("sw.js").catch((e) => console.warn("SW registration failed", e));
     });
   }
+</script>
+
+<script type="module">
+  // ---------------------------------------------------------------------
+  // Cross-device sync via Firebase (Authentication + Firestore).
+  //
+  // >>> PASTE YOUR OWN FIREBASE PROJECT CONFIG BELOW <<<
+  // Get this from: Firebase console → your project → Project settings
+  // (gear icon) → General tab → "Your apps" → the web app → SDK setup.
+  // These values are meant to be public/client-side; access is controlled
+  // by the Firestore security rules, not by keeping this config secret.
+  // ---------------------------------------------------------------------
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
+  import {
+    getAuth, onAuthStateChanged, signInWithEmailAndPassword,
+    createUserWithEmailAndPassword, signOut,
+  } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
+  import {
+    getFirestore, doc, getDoc, setDoc,
+  } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+  apiKey: "AIzaSyBVOySJX_cyBYHvhmQwBYSBx46xoBdu6o",
+  authDomain: "the-register-668ef.firebaseapp.com",
+  projectId: "the-register-668ef",
+  storageBucket: "the-register-668ef.firebasestorage.app",
+  messagingSenderId: "1045749131861",
+  appId: "1:1045749131861:web:e11339975ce14858b302dc",
+  measurementId: "G-BZ4HEZNVEF"
+};
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  window.cloudAuth = {
+    onAuthStateChanged: (cb) => onAuthStateChanged(auth, cb),
+    signIn: (email, password) => signInWithEmailAndPassword(auth, email, password),
+    signUp: (email, password) => createUserWithEmailAndPassword(auth, email, password),
+    signOut: () => signOut(auth),
+  };
+
+  // Same get/set shape the app already expects — now backed by Firestore,
+  // scoped to the signed-in user, instead of this device's localStorage.
+  window.storage = {
+    get: async (key) => {
+      const uid = auth.currentUser && auth.currentUser.uid;
+      if (!uid) return null;
+      const snap = await getDoc(doc(db, "users", uid, "kv", key));
+      if (!snap.exists()) return null;
+      return { key, value: snap.data().value };
+    },
+    set: async (key, value) => {
+      const uid = auth.currentUser && auth.currentUser.uid;
+      if (!uid) return null;
+      await setDoc(doc(db, "users", uid, "kv", key), { value, updatedAt: Date.now() });
+      return { key, value };
+    },
+  };
+
+  window.__resolveCloudSync();
 </script>
 
 <script type="text/plain" id="app-source">
@@ -223,6 +264,69 @@ function ConfirmDialog({ message, onConfirm, onCancel }) {
   );
 }
 
+function SignIn() {
+  const [mode, setMode] = useState("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setBusy(true);
+    try {
+      if (mode === "signin") await window.cloudAuth.signIn(email, password);
+      else await window.cloudAuth.signUp(email, password);
+    } catch (err) {
+      setError((err && err.message ? err.message : "Something went wrong.").replace("Firebase: ", ""));
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center p-4" style={{ background: C.paper, fontFamily: bodyFont }}>
+      <Card className="w-full max-w-sm p-6">
+        <div style={{ fontFamily: displayFont, color: C.ink }} className="text-xl font-semibold mb-1">The Register</div>
+        <div className="text-sm mb-5" style={{ color: C.inkSoft }}>{mode === "signin" ? "Sign in to your ledger" : "Create your account"}</div>
+        <form onSubmit={submit} className="flex flex-col gap-3">
+          <input
+            type="email" required placeholder="Email" value={email} autoComplete="email"
+            onChange={(e) => setEmail(e.target.value)}
+            className="px-3 py-2 rounded-md text-sm outline-none"
+            style={{ background: C.paper, border: `1px solid ${C.line}`, color: C.ink }}
+          />
+          <input
+            type="password" required placeholder="Password" value={password}
+            autoComplete={mode === "signin" ? "current-password" : "new-password"}
+            onChange={(e) => setPassword(e.target.value)}
+            className="px-3 py-2 rounded-md text-sm outline-none"
+            style={{ background: C.paper, border: `1px solid ${C.line}`, color: C.ink }}
+          />
+          {error && <div className="text-xs" style={{ color: C.rust }}>{error}</div>}
+          <button
+            disabled={busy} type="submit"
+            className="px-3.5 py-2 rounded-md text-sm font-medium mt-1"
+            style={{ background: C.brass, color: "#fff", opacity: busy ? 0.7 : 1 }}
+          >
+            {busy ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
+          </button>
+        </form>
+        <button
+          onClick={() => { setMode(mode === "signin" ? "signup" : "signin"); setError(""); }}
+          className="text-xs mt-4 font-medium"
+          style={{ color: C.brass }}
+        >
+          {mode === "signin" ? "New here? Create an account" : "Already have an account? Sign in"}
+        </button>
+        <div className="text-xs mt-5" style={{ color: C.inkSoft }}>
+          Sign in with the same email on your other device to see the same data there.
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 const NAV = [
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { key: "properties", label: "Properties", icon: Building2 },
@@ -241,14 +345,24 @@ function App() {
   const [loaded, setLoaded] = useState(false);
   const [modal, setModal] = useState(null);
   const [confirm, setConfirm] = useState(null);
+  const [user, setUser] = useState(undefined); // undefined = checking, null = signed out, object = signed in
 
   useEffect(() => {
+    const unsub = window.cloudAuth.onAuthStateChanged((u) => setUser(u || null));
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    setLoaded(false);
     (async () => {
-      try { const res = await window.storage.get(STORAGE_KEY); if (res && res.value) setStore({ ...EMPTY_STATE, ...JSON.parse(res.value) }); }
-      catch (e) {}
+      try {
+        const res = await window.storage.get(STORAGE_KEY);
+        setStore(res && res.value ? { ...EMPTY_STATE, ...JSON.parse(res.value) } : EMPTY_STATE);
+      } catch (e) { console.error("Load failed", e); }
       setLoaded(true);
     })();
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -277,11 +391,13 @@ function App() {
     return { totalUnits, occupied, occupancy, expectedRent, collected, overdue, overdueTotal, openMaint, expiringLeases };
   }, [store]);
 
+  if (user === undefined) return <div className="min-h-screen flex items-center justify-center" style={{ background: C.paper, fontFamily: bodyFont, color: C.inkSoft }}>Checking sign-in…</div>;
+  if (user === null) return <SignIn />;
   if (!loaded) return <div className="min-h-screen flex items-center justify-center" style={{ background: C.paper, fontFamily: bodyFont, color: C.inkSoft }}>Loading your register…</div>;
 
   return (
     <div className="min-h-screen flex" style={{ background: C.paper, fontFamily: bodyFont }}>
-      <aside className={`fixed md:static z-40 h-full md:h-auto w-64 shrink-0 transition-transform ${navOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}`} style={{ background: C.ink, minHeight: "100vh" }}>
+      <aside className={`fixed md:static z-40 h-full md:h-auto w-64 shrink-0 flex flex-col transition-transform ${navOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}`} style={{ background: C.ink, minHeight: "100vh" }}>
         <div className="px-5 pt-6 pb-5" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
           <div style={{ fontFamily: displayFont, color: "#fff" }} className="text-xl font-semibold leading-tight">The Register</div>
           <div className="text-xs mt-0.5" style={{ color: "rgba(255,255,255,0.5)" }}>Property &amp; tenant ledger</div>
@@ -297,6 +413,10 @@ function App() {
             );
           })}
         </nav>
+        <div className="px-3 mt-auto pb-5 pt-4" style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+          <div className="text-xs px-3 mb-1.5 truncate" style={{ color: "rgba(255,255,255,0.45)" }}>{user.email}</div>
+          <button onClick={() => window.cloudAuth.signOut()} className="px-3 py-1.5 rounded-md text-xs font-medium" style={{ color: "rgba(255,255,255,0.6)" }}>Sign out</button>
+        </div>
       </aside>
       {navOpen && <div className="fixed inset-0 bg-black/40 z-30 md:hidden" onClick={() => setNavOpen(false)} />}
 
@@ -765,7 +885,7 @@ root.render(<App />);
   // relying on the auto-transform's default (which varies across Babel
   // versions and can otherwise try to import "react/jsx-runtime" as an ES
   // module — something a plain <script> page can't do, leaving a blank page).
-  (function () {
+  window.__cloudSyncReady.then(function () {
     var source = document.getElementById("app-source").textContent;
     var output = Babel.transform(source, {
       presets: [["react", { runtime: "classic" }]],
@@ -774,7 +894,7 @@ root.render(<App />);
     var script = document.createElement("script");
     script.text = output;
     document.body.appendChild(script);
-  })();
+  });
 </script>
 </body>
 </html>
