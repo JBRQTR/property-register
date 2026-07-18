@@ -1,4 +1,4 @@
-const CACHE_NAME = "the-register-v1";
+const CACHE_NAME = "the-register-v2";
 const SHELL = [
   "./",
   "./index.html",
