@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>The Register — Master Sync</title>
+<meta name="robots" content="noindex,nofollow" />
+<style>
+  :root{--ink:#20303A;--paper:#F5F1E8;--card:#fff;--line:#DED6C3;--brass:#A2793D;--moss:#4B6C54;--rust:#A44A32;--muted:#63737B}
+  *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font-family:Inter,system-ui,sans-serif}.wrap{max-width:760px;margin:40px auto;padding:20px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px;margin-bottom:16px}h1{margin:0 0 6px;font-family:Georgia,serif;font-size:28px}.sub{color:var(--muted);font-size:14px;line-height:1.5}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:18px}.field{display:flex;flex-direction:column;gap:6px}.field.wide{grid-column:1/-1}label{font-size:12px;font-weight:600;color:var(--muted)}input{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:8px;background:var(--paper);font-size:16px;color:var(--ink)}button{border:0;border-radius:8px;padding:11px 16px;font-weight:700;cursor:pointer}.primary{background:var(--brass);color:#fff}.secondary{background:#EEEAE0;color:var(--ink)}button:disabled{opacity:.5;cursor:not-allowed}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:16px}.status{font-size:13px;line-height:1.5;padding:12px;border-radius:8px;background:#EEEAE0}.good{background:#E7EEE7;color:var(--moss)}.bad{background:#F5E5DE;color:var(--rust)}.warn{background:#F1E8D4;color:#8A6531}.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:16px}.metric{border:1px solid var(--line);border-radius:9px;padding:12px}.metric b{display:block;font-size:22px}.metric span{font-size:12px;color:var(--muted)}ul{padding-left:20px;font-size:13px;color:var(--muted);line-height:1.6}.hidden{display:none}@media(max-width:600px){.grid,.summary{grid-template-columns:1fr}.wrap{margin:10px auto;padding:12px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>Master Portfolio Sync</h1>
+    <div class="sub">One-time reconciliation tool for <strong>The Register</strong>. It merges the reconciled Excel master dated 29 Aug 2026 into your existing Firebase workspace while preserving maintenance, documents, expenses and existing payment history.</div>
+    <ul>
+      <li>Updates/creates Um Ghwailina (14 units), Najma (6 units) and Pearl 804.</li>
+      <li>Updates current tenant names, phones, lease dates, monthly rent and deposit amounts.</li>
+      <li>Adds September 2026 rent collection/PDC dates as payment due dates, without marking them paid.</li>
+      <li>Preserves existing paid dates and other payment records.</li>
+      <li>Missing or partial cheque information is retained as a NOTE — it is never guessed.</li>
+    </ul>
+  </div>
+
+  <div class="card" id="authCard">
+    <div class="grid">
+      <div class="field wide"><label>THE REGISTER EMAIL</label><input id="email" type="email" autocomplete="email" placeholder="Email used in The Register" /></div>
+      <div class="field wide"><label>THE REGISTER PASSWORD</label><input id="password" type="password" autocomplete="current-password" placeholder="Password" /></div>
+    </div>
+    <div class="row"><button id="signIn" class="primary">Sign in securely</button><span id="authStatus" class="sub"></span></div>
+  </div>
+
+  <div class="card hidden" id="syncCard">
+    <div id="workspaceInfo" class="status"></div>
+    <div class="summary">
+      <div class="metric"><b>3</b><span>master properties</span></div>
+      <div class="metric"><b>21</b><span>master units</span></div>
+      <div class="metric"><b>20</b><span>September rent dates</span></div>
+    </div>
+    <div class="row"><button id="sync" class="primary">Synchronize master now</button><button id="signOut" class="secondary">Sign out</button></div>
+    <div id="syncStatus" class="status warn" style="margin-top:14px">Ready. No changes have been made yet.</div>
+  </div>
+
+  <div class="card hidden" id="doneCard">
+    <div id="doneStatus" class="status good"></div>
+    <div class="row"><a href="./?nocache=1"><button class="primary">Open The Register</button></a></div>
+  </div>
+</div>
+
+<script src="master-2026-08-29.js"></script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
+import { getAuth, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
+import { getFirestore, doc, getDoc, setDoc, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+
+const firebaseConfig={apiKey:"AIzaSyBVOySJX_cyBYHvhmQwBYSBx46xoBdu61o",authDomain:"the-register-668ef.firebaseapp.com",projectId:"the-register-668ef",storageBucket:"the-register-668ef.firebasestorage.app",messagingSenderId:"1045749131861",appId:"1:1045749131861:web:e11339975ce14858b302dc",measurementId:"G-BZ4HEZNVEF"};
+const app=initializeApp(firebaseConfig), auth=getAuth(app), db=getFirestore(app);
+const STORAGE_KEY="pm-store-v1";
+const EMPTY={properties:[],units:[],tenants:[],payments:[],maintenance:[],documents:[],expenses:[]};
+let workspaceId=null, signedUser=null;
+const $=id=>document.getElementById(id);
+const norm=s=>String(s||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
+const propAliases={
+  "Um Ghwailina":["um ghwailina","umm ghwailina","um ghwilina","umm ghwilina","um ghweilinah"],
+  "Najma":["najma"],
+  "Pearl 804":["pearl 804","the pearl 804","pearl unit 804","pearl tower 24 804"]
+};
+const propType=name=>name==="Najma"?"Commercial":"Apartment Building";
+const propAddress=name=>name==="Um Ghwailina"?"Um Ghwailina, Doha, Qatar":name==="Najma"?"Najma, Doha, Qatar":"The Pearl, Doha, Qatar";
+const deterministic=s=>"master-"+s.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
+
+function findProperty(store,name){
+  const aliases=propAliases[name]||[name];
+  return store.properties.find(p=>aliases.some(a=>norm(p.name).includes(norm(a))||norm(a).includes(norm(p.name))));
+}
+function currentStatus(m){
+  const today=new Date().toISOString().slice(0,10);
+  if(m.leaseStart&&today<m.leaseStart)return "Upcoming";
+  if(m.leaseEnd&&today>m.leaseEnd)return "Expired";
+  return "Active";
+}
+function unitOccupancy(m){return currentStatus(m)==="Expired"?"Vacant":"Occupied";}
+function appendNote(base,add){
+  const b=String(base||"").trim(), a=String(add||"").trim();
+  if(!a)return b;if(b.includes(a))return b;return b?b+"\n\nMASTER 29-AUG-2026: "+a:"MASTER 29-AUG-2026: "+a;
+}
+
+function mergeMaster(existing){
+  const s={...EMPTY,...existing};
+  s.properties=Array.isArray(s.properties)?s.properties:[];s.units=Array.isArray(s.units)?s.units:[];s.tenants=Array.isArray(s.tenants)?s.tenants:[];s.payments=Array.isArray(s.payments)?s.payments:[];s.maintenance=Array.isArray(s.maintenance)?s.maintenance:[];s.documents=Array.isArray(s.documents)?s.documents:[];s.expenses=Array.isArray(s.expenses)?s.expenses:[];
+  const report={propertiesCreated:0,unitsCreated:0,unitsUpdated:0,tenantsCreated:0,tenantsUpdated:0,paymentsCreated:0,paymentsPreserved:0,formerTenants:0,notes:[]};
+  const propMap={};
+  for(const m of window.MASTER_REGISTER_DATA.units){
+    if(propMap[m.property])continue;
+    let p=findProperty(s,m.property);
+    if(!p){p={id:deterministic("property-"+m.property),name:m.property,address:propAddress(m.property),type:propType(m.property),notes:"Created from reconciled master portfolio on 29 Aug 2026."};s.properties.push(p);report.propertiesCreated++;}
+    propMap[m.property]=p;
+  }
+  for(const m of window.MASTER_REGISTER_DATA.units){
+    const p=propMap[m.property];
+    let u=s.units.find(x=>x.propertyId===p.id&&String(x.unitNumber)===String(m.unitNumber));
+    if(!u){u={id:deterministic(m.unitId),propertyId:p.id,unitNumber:String(m.unitNumber),status:unitOccupancy(m),tenantId:null,rentAmount:m.rent,notes:""};s.units.push(u);report.unitsCreated++;}
+    else report.unitsUpdated++;
+    u.propertyId=p.id;u.unitNumber=String(m.unitNumber);u.rentAmount=m.rent;u.status=unitOccupancy(m);u.notes=appendNote(u.notes,m.notes);u.masterUnitId=m.unitId;u.dueDay=m.dueDay;u.use=m.use;u.renewalStatus=m.renewalStatus;u.pdcCoverage=m.pdcCoverage;
+
+    let t=s.tenants.find(x=>x.unitId===u.id&&norm(x.name)===norm(m.tenant));
+    if(!t&&u.tenantId){const old=s.tenants.find(x=>x.id===u.tenantId);if(old&&norm(old.name)!==norm(m.tenant)){old.status="Former";old.unitId=null;old.notes=appendNote(old.notes,"Replaced by current master tenant "+m.tenant+" for "+m.property+" Unit "+m.unitNumber+".");report.formerTenants++;}}
+    if(!t)t=s.tenants.find(x=>norm(x.name)===norm(m.tenant)&&(!x.unitId||x.unitId===u.id));
+    if(!t){t={id:deterministic("tenant-"+m.unitId),name:m.tenant};s.tenants.push(t);report.tenantsCreated++;}else report.tenantsUpdated++;
+    t.name=m.tenant;t.phone=m.phone||"";t.unitId=u.id;t.leaseStart=m.leaseStart;t.leaseEnd=m.leaseEnd;t.depositAmount=m.deposit;t.status=currentStatus(m);t.notes=appendNote(t.notes,(m.contactPerson?"Contact person: "+m.contactPerson+". ":"")+m.notes);
+    u.tenantId=t.id;
+
+    if(m.sep2026DueDate){
+      let pay=s.payments.find(x=>x.unitId===u.id&&x.dueDate===m.sep2026DueDate);
+      if(!pay){pay={id:deterministic("payment-"+m.unitId+"-2026-09"),tenantId:t.id,unitId:u.id,amount:m.rent,dueDate:m.sep2026DueDate,paidDate:"",method:"Cheque",status:"Pending",notes:m.sep2026PaymentNote};s.payments.push(pay);report.paymentsCreated++;}
+      else{pay.tenantId=t.id;pay.amount=m.rent;pay.notes=appendNote(pay.notes,m.sep2026PaymentNote);report.paymentsPreserved++;}
+    }
+    if(m.pdcCoverage!=="Complete")report.notes.push(m.unitId+": "+m.pdcCoverage);
+  }
+  s.masterSyncVersion=window.MASTER_REGISTER_DATA.version;
+  s.masterSyncSource=window.MASTER_REGISTER_DATA.source;
+  s.masterSyncAt=new Date().toISOString();
+  return {store:s,report};
+}
+
+async function resolveWorkspace(user){
+  const q=query(collection(db,"workspaces"),where("members","array-contains",user.email));
+  const snap=await getDocs(q);if(snap.empty)throw new Error("No existing The Register workspace was found for this email. Open the normal app once first.");
+  workspaceId=snap.docs[0].id;return {id:workspaceId,...snap.docs[0].data()};
+}
+
+$("signIn").addEventListener("click",async()=>{
+  const email=$("email").value.trim(),password=$("password").value;
+  if(!email||!password){$("authStatus").textContent="Enter your The Register email and password.";return;}
+  $("signIn").disabled=true;$("authStatus").textContent="Signing in…";
+  try{const cred=await signInWithEmailAndPassword(auth,email,password);signedUser=cred.user;const ws=await resolveWorkspace(signedUser);$("authStatus").textContent="Signed in.";$("workspaceInfo").textContent="Workspace found for "+ws.ownerEmail+". Existing records will be merged, not erased.";$("syncCard").classList.remove("hidden");}
+  catch(e){$("authStatus").textContent=(e&&e.message?e.message:"Sign-in failed.").replace("Firebase: ","");}
+  $("signIn").disabled=false;
+});
+
+$("sync").addEventListener("click",async()=>{
+  if(!workspaceId)return;
+  $("sync").disabled=true;$("syncStatus").className="status warn";$("syncStatus").textContent="Reading the current register and reconciling…";
+  try{
+    const ref=doc(db,"workspaces",workspaceId,"kv",STORAGE_KEY),snap=await getDoc(ref);let existing=EMPTY;
+    if(snap.exists()&&snap.data().value)existing=JSON.parse(snap.data().value);
+    const {store,report}=mergeMaster(existing);
+    await setDoc(ref,{value:JSON.stringify(store),updatedAt:Date.now()});
+    $("syncStatus").className="status good";$("syncStatus").textContent="Synchronization complete.";
+    $("doneStatus").innerHTML="Updated the live workspace from the reconciled master: <strong>"+report.unitsCreated+" units created, "+report.unitsUpdated+" units updated, "+report.tenantsCreated+" tenants created, "+report.tenantsUpdated+" tenants updated, and "+report.paymentsCreated+" September payment dates added.</strong> Existing historical payments were preserved. "+(report.notes.length?"Notes retained for: "+report.notes.join(", ")+".":"");
+    $("doneCard").classList.remove("hidden");
+  }catch(e){$("syncStatus").className="status bad";$("syncStatus").textContent="Sync failed: "+(e&&e.message?e.message:e);}
+  $("sync").disabled=false;
+});
+$("signOut").addEventListener("click",async()=>{await signOut(auth);location.reload();});
+</script>
+</body>
+</html>
